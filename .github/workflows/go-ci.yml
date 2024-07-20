@@ -1,0 +1,28 @@
+name: Go CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.19
+
+    - name: Build (debug)
+      run: go build -v -tags debug -buildvcs=false -o %filename%_debug.exe ./...
+
+    - name: Test
+      run: go test -v ./...
+
+    - name: Run a Windows command
+      run: dir
