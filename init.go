@@ -8,6 +8,9 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// https://www.digitalocean.com/community/tutorials/using-ldflags-to-set-version-information-for-go-applications
+var Version = "development"
+
 type Device struct {
 	Idata               DevInfoData
 	reg                 registry.Key
