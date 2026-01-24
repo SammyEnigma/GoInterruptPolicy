@@ -3,8 +3,14 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 )
+
+func PrettyPrint(data any) string {
+	b, _ := json.MarshalIndent(data, "", "  ")
+	return string(b)
+}
 
 // AMD 5900x
 func Fake5900x() {
