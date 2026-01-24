@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"os"
 	"syscall"
 	"unicode/utf16"
@@ -75,9 +74,8 @@ func GetRegistryLocation(regHandle uintptr) (string, error) {
 		if result := NtQueryKey(regHandle, KeyNameInformation, &buf[0], size, &size); result == 0 {
 			regPath, err := DecodeUTF16(buf)
 			if err != nil {
-				log.Println(err)
+				return "", err
 			}
-
 			tempRegPath := replaceRegistryMachine(regPath)
 			tempRegPath = generalizeControlSet(tempRegPath)
 

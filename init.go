@@ -3,8 +3,9 @@ package main
 import (
 	"log"
 	"strconv"
-	"time"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -21,7 +22,6 @@ type Device struct {
 	Driver              string
 	LocationInformation string
 	FriendlyName        string
-	LastChange          time.Time
 
 	// AffinityPolicy
 	DevicePolicy          uint32
@@ -35,6 +35,16 @@ type Device struct {
 	InterruptTypeMap   Bits
 }
 
+func (d *Device) getInstanceID() (string, error) {
+	n := uint32(0)
+	setupDiGetDeviceInstanceId(handle, &d.Idata, nil, 0, &n)
+	buff := make([]uint16, n)
+	if err := setupDiGetDeviceInstanceId(handle, &d.Idata, unsafe.Pointer(&buff[0]), uint32(len(buff)), &n); err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(buff), nil
+}
+
 const (
 	// https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/interrupt-affinity-and-priority
 	IrqPolicyMachineDefault                    = iota // 0
@@ -43,6 +53,13 @@ const (
 	IrqPolicyAllProcessorsInMachine                   // 3
 	IrqPolicySpecifiedProcessors                      // 4
 	IrqPolicySpreadMessagesAcrossAllProcessors        // 5
+)
+
+const (
+	MSI_Off uint32 = iota
+	MSI_On
+	MSI_Tristate
+	MSI_Invalid
 )
 
 type Bits uint64

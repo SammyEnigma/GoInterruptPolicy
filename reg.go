@@ -2,8 +2,10 @@ package main
 
 import (
 	"log"
+	"os/exec"
 	"strings"
 
+	"github.com/tailscale/walk"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -38,70 +40,92 @@ func GetDWORDuint32Value(key registry.Key, name string) uint32 {
 	return btoi32(buf)
 }
 
-func setMSIMode(item *Device) {
+func (d *Device) setMSIMode(item *Device) (changed bool) {
 	var k registry.Key
 	var err error
-	if item.MsiSupported == 1 {
-		k, _, err = registry.CreateKey(item.reg, `Interrupt Management\MessageSignaledInterruptProperties`, registry.ALL_ACCESS)
+
+	switch item.MsiSupported {
+	case MSI_Off:
+		d.MsiSupported = MSI_Off
+		k, err = registry.OpenKey(d.reg, `Interrupt Management\MessageSignaledInterruptProperties`, registry.ALL_ACCESS)
 		if err != nil {
 			log.Println(err)
+			return
+		}
+		if err := registry.DeleteKey(d.reg, `Interrupt Management\MessageSignaledInterruptProperties`); err != nil {
+			log.Println(err)
+		}
+		changed = true
+	case MSI_On:
+		k, _, err = registry.CreateKey(d.reg, `Interrupt Management\MessageSignaledInterruptProperties`, registry.ALL_ACCESS)
+		if err != nil {
+			log.Println(err)
+			return
 		}
 		if err := k.SetDWordValue("MSISupported", 1); err != nil {
 			log.Println(err)
 		}
+		d.MsiSupported = MSI_On
 
 		if item.MessageNumberLimit == 0 {
 			if err := k.DeleteValue("MessageNumberLimit"); err != nil {
 				log.Println(err)
 			}
+			d.MessageNumberLimit = 0
 		} else {
-			if err := k.SetDWordValue("MessageNumberLimit", uint32(item.MessageNumberLimit)); err != nil {
+			if err := k.SetDWordValue("MessageNumberLimit", item.MessageNumberLimit); err != nil {
 				log.Println(err)
 			}
+			d.MessageNumberLimit = item.MessageNumberLimit
 		}
-	} else {
-		k, err = registry.OpenKey(item.reg, `Interrupt Management\MessageSignaledInterruptProperties`, registry.ALL_ACCESS)
-		if err != nil {
-			log.Println(err)
-		}
-
-		if err := registry.DeleteKey(item.reg, `Interrupt Management\MessageSignaledInterruptProperties`); err != nil {
-			log.Println(err)
-		}
+		changed = true
 	}
 	if err := k.Close(); err != nil {
 		log.Println(err)
 	}
+	return
 }
 
-func setAffinityPolicy(item *Device) {
+func (d *Device) setAffinityPolicy(item *Device) (changed bool) {
 	var k registry.Key
 	var err error
-
 	if item.DevicePolicy == 0 && item.DevicePriority == 0 {
-
-		k, err = registry.OpenKey(item.reg, `Interrupt Management\Affinity Policy`, registry.ALL_ACCESS)
+		d.DevicePolicy = 0
+		d.DevicePriority = 0
+		d.AssignmentSetOverride = ZeroBit
+		k, err = registry.OpenKey(d.reg, `Interrupt Management\Affinity Policy`, registry.ALL_ACCESS)
 		if err != nil {
 			log.Println(err)
+			return
 		}
+		defer k.Close()
 
-		if err := registry.DeleteKey(item.reg, `Interrupt Management\Affinity Policy`); err != nil {
+		if err := registry.DeleteKey(d.reg, `Interrupt Management\Affinity Policy`); err != nil {
 			log.Println(err)
 		}
-
+		changed = true
 	} else {
-
-		k, _, err = registry.CreateKey(item.reg, `Interrupt Management\Affinity Policy`, registry.ALL_ACCESS)
+		k, _, err = registry.CreateKey(d.reg, `Interrupt Management\Affinity Policy`, registry.ALL_ACCESS)
 		if err != nil {
 			log.Println(err)
+			return
 		}
+		defer k.Close()
 
 		if err := k.SetDWordValue("DevicePolicy", item.DevicePolicy); err != nil {
 			log.Println(err)
 		}
+		d.DevicePolicy = item.DevicePolicy
 
-		if item.DevicePolicy != 4 {
+		if item.DevicePolicy != 4 { // IrqPolicySpecifiedProcessors
 			k.DeleteValue("AssignmentSetOverride")
+			d.AssignmentSetOverride = ZeroBit
+		} else {
+			AssignmentSetOverrideByte := i64tob(uint64(item.AssignmentSetOverride))
+			if err := k.SetBinaryValue("AssignmentSetOverride", AssignmentSetOverrideByte[:clen(AssignmentSetOverrideByte)]); err != nil {
+				log.Println(err)
+			}
+			d.AssignmentSetOverride = item.AssignmentSetOverride
 		}
 
 		if item.DevicePriority == 0 {
@@ -109,26 +133,21 @@ func setAffinityPolicy(item *Device) {
 		} else if err := k.SetDWordValue("DevicePriority", item.DevicePriority); err != nil {
 			log.Println(err)
 		}
+		d.DevicePriority = item.DevicePriority
 
-		AssignmentSetOverrideByte := i64tob(uint64(item.AssignmentSetOverride))
-		if err := k.SetBinaryValue("AssignmentSetOverride", AssignmentSetOverrideByte[:clen(AssignmentSetOverrideByte)]); err != nil {
-			log.Println(err)
-		}
-
+		changed = true
 	}
-	if err := k.Close(); err != nil {
-		log.Println(err)
-	}
+	return
 }
 
 // \REGISTRY\MACHINE\
 func replaceRegistryMachine(regPath string) string {
-	indexMACHINE := strings.Index(regPath, "\\REGISTRY\\MACHINE\\")
-	if indexMACHINE == -1 {
+	_, regPathAfter, found := strings.Cut(regPath, "\\REGISTRY\\MACHINE\\")
+	if !found {
 		log.Println("not Found")
 		return ""
 	}
-	return regPath[indexMACHINE+len("\\REGISTRY\\MACHINE\\"):]
+	return regPathAfter
 }
 
 // replaces ControlSet00X with CurrentControlSet
@@ -143,5 +162,22 @@ func generalizeControlSet(regPath string) string {
 		}
 	}
 	return strings.Join(regPathArray, "\\")
+}
 
+func OpenRegistry(dlg walk.Form, reg registry.Key) {
+	regPath, err := GetRegistryLocation(uintptr(reg))
+	if err != nil {
+		walk.MsgBox(dlg, "NtQueryKey Error", err.Error(), walk.MsgBoxIconError)
+	}
+
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Applets\Regedit`, registry.SET_VALUE)
+	if err != nil {
+		walk.MsgBox(dlg, "Registry Error", err.Error(), walk.MsgBoxIconError)
+		log.Fatal(err)
+	}
+	defer k.Close()
+
+	if err := k.SetStringValue("LastKey", regPath); err == nil {
+		exec.Command("regedit", "-m").Start()
+	}
 }

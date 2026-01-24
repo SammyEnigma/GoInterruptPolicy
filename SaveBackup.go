@@ -10,11 +10,10 @@ import (
 	"github.com/tailscale/walk"
 )
 
-func createRegFile(regpath string, item *Device) string {
-	packageInfo := template.New("packageInfo")
-	tmplProperty := template.Must(packageInfo.Parse(string(`Windows Registry Editor Version 5.00
+const REG_FILE_HEADER = "Windows Registry Editor Version 5.00\n\n"
 
-[{{.RegPath}}\Interrupt Management]
+var packageInfo = template.New("packageInfo")
+var tmplProperty = template.Must(packageInfo.Parse(string(`[{{.RegPath}}\Interrupt Management]
 
 [{{.RegPath}}\Interrupt Management\Affinity Policy]
 "DevicePolicy"=dword:{{printf "%08d" .Device.DevicePolicy}}
@@ -24,8 +23,10 @@ func createRegFile(regpath string, item *Device) string {
 [{{.RegPath}}\Interrupt Management\MessageSignaledInterruptProperties]
 "MSISupported"=dword:{{printf "%08d" .Device.MsiSupported}}
 {{if eq .Device.MsiSupported 1}}{{if ne .Device.MessageNumberLimit 0}}"MessageNumberLimit"=dword:{{printf "%08d" .Device.MessageNumberLimit}}{{end}}{{else}}"MessageNumberLimit"=-{{end}}
+
 `)))
 
+func createRegFile(dlg *walk.Dialog, regpath string, item *Device) string {
 	var buf bytes.Buffer
 	err := tmplProperty.Execute(&buf, struct {
 		RegPath               string
@@ -38,6 +39,7 @@ func createRegFile(regpath string, item *Device) string {
 	})
 
 	if err != nil {
+		walk.MsgBox(dlg, "CreateRegFile Error", err.Error(), walk.MsgBoxIconError)
 		log.Fatalln(err)
 	}
 

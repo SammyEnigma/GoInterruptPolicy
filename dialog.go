@@ -10,20 +10,30 @@ import (
 	"strings"
 
 	"github.com/tailscale/walk"
-	"golang.org/x/sys/windows/registry"
 
 	//lint:ignore ST1001 standard behavior tailscale/walk
 	. "github.com/tailscale/walk/declarative"
 )
 
-type IrqPolicys struct {
-	Enums float64
+type ComboBoxIntStruct struct {
+	Enums int
 	Name  string
 }
 
-type IrqPrioritys struct {
-	Enums float64
+type ComboBoxUintStruct struct {
+	Enums uint32
 	Name  string
+}
+
+func NewComboBoxModel(names []string) []*ComboBoxUintStruct {
+	items := make([]*ComboBoxUintStruct, len(names))
+	for i, n := range names {
+		items[i] = &ComboBoxUintStruct{
+			Enums: uint32(i),
+			Name:  n,
+		}
+	}
+	return items
 }
 
 type CheckBoxList struct {
@@ -31,40 +41,63 @@ type CheckBoxList struct {
 	List   []*walk.CheckBox
 }
 
-func IrqPolicy() []*IrqPolicys {
-	return []*IrqPolicys{
-		{IrqPolicyMachineDefault, "IrqPolicyMachineDefault"},
-		{IrqPolicyAllCloseProcessors, "IrqPolicyAllCloseProcessors"},
-		{IrqPolicyOneCloseProcessor, "IrqPolicyOneCloseProcessor"},
-		{IrqPolicyAllProcessorsInMachine, "IrqPolicyAllProcessorsInMachine"},
-		{IrqPolicySpecifiedProcessors, "IrqPolicySpecifiedProcessors"},
-		{IrqPolicySpreadMessagesAcrossAllProcessors, "IrqPolicySpreadMessagesAcrossAllProcessors"},
+func ListDevices(devices []Device) []*ComboBoxIntStruct {
+	out := make([]*ComboBoxIntStruct, len(devices))
+	for i := range devices {
+		out[i] = &ComboBoxIntStruct{
+			Enums: i,
+			Name:  devices[i].DeviceDesc,
+		}
 	}
+
+	return out
 }
 
-func IrqPriority() []*IrqPrioritys {
-	return []*IrqPrioritys{
-		{0, "Undefined"},
-		{1, "Low"},
-		{2, "Normal"},
-		{3, "High"},
-	}
-}
-
-func RunDialog(owner walk.Form, device *Device) (int, error) {
+func RunDialog(owner walk.Form, devices []Device) (int, Device, error) {
 	var dlg *walk.Dialog
 	var db *walk.DataBinder
 	var acceptPB, cancelPB *walk.PushButton
-
 	var cpuArrayComView *walk.Composite
-
-	var devicePolicyCB, devicePriorityCB *walk.ComboBox
+	var devicePolicyCB, devicePriorityCB, openRegistryCB, openDeviceManagerCB *walk.ComboBox
+	var MsiSupportedCB *walk.CheckBox
 	var deviceMessageNumberLimitNE *walk.NumberEdit
 	var checkBoxList = new(CheckBoxList)
+	var title string
+	var DevObjName, DeviceDesc, LocationInformation []string
 
-	return Dialog{
+	for i := range devices {
+		DevObjName = append(DevObjName, devices[i].DevObjName)
+		DeviceDesc = append(DeviceDesc, devices[i].DeviceDesc)
+		if devices[i].LocationInformation == "" {
+			LocationInformation = append(LocationInformation, "N/A")
+		} else {
+			LocationInformation = append(LocationInformation, devices[i].LocationInformation)
+		}
+	}
+
+	if len(devices) == 1 {
+		title = fmt.Sprintf("Device Policy - %s", devices[0].DeviceDesc)
+	} else {
+		title = fmt.Sprintf("Device Policy - %d devices", len(devices))
+	}
+
+	device := &Device{
+		DevObjName:            strings.Join(DevObjName, ", "),
+		DeviceDesc:            strings.Join(DeviceDesc, ", "),
+		LocationInformation:   strings.Join(LocationInformation, ", "),
+		DevicePolicy:          FindCommonValue(devices, 32, func(d Device) uint32 { return d.DevicePolicy }),   // Empty
+		DevicePriority:        FindCommonValue(devices, 32, func(d Device) uint32 { return d.DevicePriority }), // Empty
+		AssignmentSetOverride: FindCommonValue(devices, 0, func(d Device) Bits { return d.AssignmentSetOverride }),
+		MsiSupported:          FindCommonValue(devices, MSI_Tristate, func(d Device) uint32 { return d.MsiSupported }), // Tristate
+		MessageNumberLimit:    FindCommonValue(devices, 0, func(d Device) uint32 { return d.MessageNumberLimit }),
+		InterruptTypeMap:      FindCommonValue(devices, 0, func(d Device) Bits { return d.InterruptTypeMap }),
+		MaxMSILimit:           FindCommonValue(devices, 0, func(d Device) uint32 { return d.MaxMSILimit }),
+	}
+
+	returnCode, err := Dialog{
 		AssignTo:      &dlg,
-		Title:         Bind("'Device Policy' + (device.DeviceDesc == '' ? '' : ' - ' + device.DeviceDesc)"),
+		Title:         title,
+		Icon:          2,
 		DefaultButton: &acceptPB,
 		CancelButton:  &cancelPB,
 		FixedSize:     true,
@@ -76,6 +109,7 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 		},
 		Layout: VBox{
 			MarginsZero: true,
+			Alignment:   AlignHFarVFar,
 		},
 		Children: []Widget{
 			Composite{
@@ -90,45 +124,54 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 								Text: "Name:",
 							},
 							Label{
-								Text: Bind("device.DeviceDesc == '' ? 'N/A' : device.DeviceDesc"),
+								EllipsisMode: EllipsisEnd,
+								ToolTipText:  strings.Join(DeviceDesc, "\n"),
+								Text:         Bind("device.DeviceDesc == '' ? 'N/A' : device.DeviceDesc"),
 							},
 
 							Label{
 								Text: "Location Info:",
 							},
 							Label{
-								Text: Bind("device.LocationInformation == '' ? 'N/A' : device.LocationInformation"),
+								EllipsisMode: EllipsisEnd,
+								ToolTipText:  strings.Join(LocationInformation, "\n"),
+								Text:         Bind("device.LocationInformation == '' ? 'N/A' : device.LocationInformation"),
 							},
 
 							Label{
 								Text: "DevObj Name:",
 							},
-							LineEdit{
-								Text:     Bind("device.DevObjName == '' ? 'N/A' : device.DevObjName"),
-								ReadOnly: true,
+							Label{
+								EllipsisMode: EllipsisEnd,
+								ToolTipText:  strings.Join(DevObjName, "\n"),
+								Text:         Bind("device.DevObjName == '' ? 'N/A' : device.DevObjName"),
+							},
+							HSpacer{
+								ColumnSpan: 2,
 							},
 						},
 					},
 
 					GroupBox{
 						Title:   "Message Signaled-Based Interrupts",
-						Visible: device.MsiSupported != 2,
+						Visible: device.MsiSupported != MSI_Invalid,
 						Layout:  Grid{Columns: 1},
 						Children: []Widget{
 
 							CheckBox{
+								AssignTo:       &MsiSupportedCB,
 								Name:           "MsiSupported",
 								Text:           "MSI Mode:",
 								TextOnLeftSide: true,
-								Checked:        device.MsiSupported == 1,
-								// Checked: Bind("eq(device.MsiSupported, 1, 'MsiSupported')"), // dont work, idk
+								Tristate:       device.MsiSupported == MSI_Tristate,
+								Checked:        device.MsiSupported == MSI_On,
 								OnClicked: func() {
-									if device.MsiSupported == 0 {
-										device.MsiSupported = 1
+									if MsiSupportedCB.Checked() {
+										device.MsiSupported = MSI_On
 										deviceMessageNumberLimitNE.SetEnabled(true)
 										device.MessageNumberLimit = uint32(deviceMessageNumberLimitNE.Value())
 									} else {
-										device.MsiSupported = 0
+										device.MsiSupported = MSI_Off
 										deviceMessageNumberLimitNE.SetEnabled(false)
 									}
 								},
@@ -150,7 +193,7 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 									NumberEdit{
 										SpinButtonsVisible: true,
 										AssignTo:           &deviceMessageNumberLimitNE,
-										Enabled:            device.MsiSupported == 1,
+										Enabled:            device.MsiSupported == MSI_On,
 										MinValue:           0,
 										MaxValue:           hasMsiX(device.InterruptTypeMap),
 										Value:              Bind("device.MessageNumberLimit < 1.0 ? 1.0 : device.MessageNumberLimit"),
@@ -190,10 +233,10 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 									},
 									ComboBox{
 										AssignTo:      &devicePriorityCB,
-										Value:         Bind("device.DevicePriority"),
+										Value:         device.DevicePriority,
 										BindingMember: "Enums",
 										DisplayMember: "Name",
-										Model:         IrqPriority(),
+										Model:         NewComboBoxModel([]string{"Undefined", "Low", "Normal", "High"}),
 										OnCurrentIndexChanged: func() {
 											device.DevicePriority = uint32(devicePriorityCB.CurrentIndex())
 										},
@@ -208,10 +251,17 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 									},
 									ComboBox{
 										AssignTo:      &devicePolicyCB,
-										Value:         Bind("device.DevicePolicy"),
+										Value:         device.DevicePolicy,
 										BindingMember: "Enums",
 										DisplayMember: "Name",
-										Model:         IrqPolicy(),
+										Model: NewComboBoxModel([]string{
+											"IrqPolicyMachineDefault",
+											"IrqPolicyAllCloseProcessors",
+											"IrqPolicyOneCloseProcessor",
+											"IrqPolicyAllProcessorsInMachine",
+											"IrqPolicySpecifiedProcessors",
+											"IrqPolicySpreadMessagesAcrossAllProcessors",
+										}),
 										OnCurrentIndexChanged: func() {
 											currentIndex := uint32(devicePolicyCB.CurrentIndex())
 											if device.DevicePolicy == currentIndex {
@@ -219,7 +269,7 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 											}
 
 											device.DevicePolicy = currentIndex
-											if device.DevicePolicy == 4 {
+											if device.DevicePolicy == 4 { // IrqPolicySpecifiedProcessors
 												cpuArrayComView.SetVisible(true)
 												return
 											}
@@ -227,7 +277,7 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 											cpuArrayComView.SetVisible(false)
 
 											if err := dlg.SetSize(walk.Size{Width: 0, Height: 0}); err != nil {
-												panic(err)
+												log.Println(err)
 											}
 
 										},
@@ -238,7 +288,7 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 							Composite{
 								AssignTo: &cpuArrayComView,
 								Layout:   VBox{MarginsZero: true},
-								Visible:  Bind("device.DevicePolicy == 4"),
+								Visible:  Bind("device.DevicePolicy == 4"), // IrqPolicySpecifiedProcessors
 								Children: []Widget{
 									Composite{
 										Alignment: AlignHNearVNear,
@@ -290,6 +340,22 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 												},
 											},
 
+											PushButton{
+												Text:    checkBoxList.LastLevelCacheName(0),
+												Visible: cs.LastLevelCache,
+												OnClicked: func() {
+													checkBoxList.LLC(&device.AssignmentSetOverride, true)
+												},
+											},
+
+											PushButton{
+												Text:    checkBoxList.LastLevelCacheName(1),
+												Visible: cs.LastLevelCache,
+												OnClicked: func() {
+													checkBoxList.LLC(&device.AssignmentSetOverride, false)
+												},
+											},
+
 											HSpacer{},
 										},
 									},
@@ -301,33 +367,45 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 					GroupBox{
 						Title:  "Registry",
 						Layout: HBox{},
+
 						Children: []Widget{
 							PushButton{
-								Text: "Open Device",
+								Text:    "Open Device",
+								Visible: len(devices) == 1,
 								OnClicked: func() {
-									regPath, err := GetRegistryLocation(uintptr(device.reg))
-									if err != nil {
-										walk.MsgBox(dlg, "NtQueryKey Error", err.Error(), walk.MsgBoxOK)
-									}
-
-									k, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Applets\Regedit`, registry.SET_VALUE)
-									if err != nil {
-										walk.MsgBox(dlg, "Registry Error", err.Error(), walk.MsgBoxOK)
-										log.Fatal(err)
-									}
-									defer k.Close()
-
-									if err := k.SetStringValue("LastKey", regPath); err == nil {
-										exec.Command("regedit", "-m").Start()
-									}
+									OpenRegistry(dlg.Form(), devices[0].reg)
 								},
 							},
+
+							Label{
+								Visible: len(devices) != 1,
+								Text:    "Open Device:",
+							},
+							ComboBox{
+								ToolTipText:   "Open Device",
+								AssignTo:      &openRegistryCB,
+								Visible:       len(devices) != 1,
+								BindingMember: "Enums",
+								DisplayMember: "Name",
+								Model:         ListDevices(devices),
+								OnCurrentIndexChanged: func() {
+									i := openRegistryCB.CurrentIndex()
+									OpenRegistry(dlg, devices[i].reg)
+								},
+							},
+
 							PushButton{
 								Text: "Export current settings",
 								OnClicked: func() {
-									regPath, err := GetRegistryLocation(uintptr(device.reg))
-									if err != nil {
-										walk.MsgBox(dlg, "NtQueryKey Error", err.Error(), walk.MsgBoxOK)
+									var reg_file_value strings.Builder
+
+									for i := range devices {
+										regPath, err := GetRegistryLocation(uintptr(devices[i].reg))
+										if err != nil {
+											walk.MsgBox(dlg, "Error", err.Error(), walk.MsgBoxIconError)
+										}
+
+										reg_file_value.WriteString(createRegFile(dlg, regPath, &devices[i]))
 									}
 
 									path, err := os.Getwd()
@@ -335,7 +413,8 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 										log.Println(err)
 									}
 
-									filePath, cancel, err := saveFileExplorer(dlg, path, strings.ReplaceAll(device.DeviceDesc, " ", "_")+".reg", "Save current settings", "Registry File (*.reg)|*.reg")
+									// NOTE: The file name can be improved.
+									filePath, cancel, err := saveFileExplorer(dlg, path, strings.ReplaceAll(devices[0].DeviceDesc, " ", "_")+".reg", "Save current settings", "Registry File (*.reg)|*.reg")
 									if !cancel || err != nil {
 										file, err := os.Create(filePath)
 										if err != nil {
@@ -343,24 +422,61 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 										}
 										defer file.Close()
 
-										file.WriteString(createRegFile(regPath, device))
+										file.WriteString(REG_FILE_HEADER + reg_file_value.String())
 									}
 								},
 							},
 							HSpacer{},
 						},
 					},
+
+					GroupBox{
+						Title:  "Device Manager",
+						Layout: HBox{},
+						Children: []Widget{
+							PushButton{
+								Visible: len(devices) == 1,
+								Text:    "Open Device",
+								OnClicked: func() {
+									if id, err := devices[0].getInstanceID(); err == nil {
+										showDeviceProperties(dlg.Handle(), id)
+									}
+								},
+							},
+
+							Label{
+								Visible: len(devices) != 1,
+								Text:    "Open Device:",
+							},
+							ComboBox{
+								ToolTipText:   "Open Device",
+								AssignTo:      &openDeviceManagerCB,
+								Visible:       len(devices) != 1,
+								BindingMember: "Enums",
+								DisplayMember: "Name",
+								Model:         ListDevices(devices),
+								OnCurrentIndexChanged: func() {
+									i := openDeviceManagerCB.CurrentIndex()
+									if id, err := devices[i].getInstanceID(); err == nil {
+										showDeviceProperties(dlg.Handle(), id)
+									}
+								},
+							},
+
+							HSpacer{},
+						},
+					},
 				},
-				Functions: map[string]func(args ...interface{}) (interface{}, error){
-					"checkIrqPolicy": func(args ...interface{}) (interface{}, error) {
-						for _, v := range IrqPolicy() {
-							if v.Enums == args[0].(float64) {
+				Functions: map[string]func(args ...any) (any, error){
+					"checkIrqPolicy": func(args ...any) (any, error) {
+						for _, v := range NewComboBoxModel([]string{"Undefined", "Low", "Normal", "High"}) {
+							if v.Enums == args[0].(uint32) {
 								return v.Name, nil
 							}
 						}
 						return "", nil
 					},
-					"viewAsHex": func(args ...interface{}) (interface{}, error) {
+					"viewAsHex": func(args ...any) (any, error) {
 						if args[0].(Bits) == ZeroBit {
 							return "N/A", nil
 						}
@@ -373,7 +489,7 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 						}
 						return strings.Join(result, ", "), nil
 					},
-					"eq": func(args ...interface{}) (interface{}, error) {
+					"eq": func(args ...any) (any, error) {
 						if len(args) != 2 {
 							return false, nil
 						}
@@ -422,6 +538,8 @@ func RunDialog(owner walk.Form, device *Device) (int, error) {
 			},
 		},
 	}.Run(owner)
+
+	return returnCode, *device, err
 }
 
 func (checkboxlist *CheckBoxList) create(bits *Bits) []Widget {
@@ -510,17 +628,10 @@ func (checkboxlist *CheckBoxList) create(bits *Bits) []Widget {
 		}
 
 		if cs.LastLevelCache && (lastLastLevelCache != cpuThread.LastLevelCacheIndex || isLastItem) {
-			var title string
-			if isAMD() {
-				title = fmt.Sprintf("CCD %d", llcCount)
-			} else {
-				title = fmt.Sprintf("LLC %d", llcCount)
-			}
-
 			switch {
 			case len(partNUMA) != 0:
 				partGroup = append(partGroup, GroupBox{
-					Title:       title,
+					Title:       checkboxlist.LastLevelCacheName(llcCount),
 					ToolTipText: ToolTipTextLastLevelCache,
 					Layout: Grid{
 						Columns: len(partNUMA) / 2,
@@ -530,7 +641,7 @@ func (checkboxlist *CheckBoxList) create(bits *Bits) []Widget {
 				partNUMA = nil
 			case len(partCore) != 0:
 				partGroup = append(partGroup, GroupBox{
-					Title:       title,
+					Title:       checkboxlist.LastLevelCacheName(llcCount),
 					ToolTipText: ToolTipTextLastLevelCache,
 					Layout: Grid{
 						Columns: mathCeilInInt(len(partCore), cs.Layout[lastEfficiencyClass].Rows),
@@ -657,6 +768,26 @@ func (checkboxlist *CheckBoxList) eCoreOnly(bits *Bits) {
 	}
 }
 
+func (checkboxlist *CheckBoxList) LastLevelCacheName(llcCount int) string {
+	if isAMD() {
+		return fmt.Sprintf("CCD %d", llcCount)
+	} else {
+		return fmt.Sprintf("LLC %d", llcCount)
+	}
+}
+
+func (checkboxlist *CheckBoxList) LLC(bits *Bits, matchZero bool) {
+	for i := 0; i < len(cs.CPU) && i < len(checkboxlist.List) && i < len(CPUBits); i++ {
+		hasMatch := (cs.CPU[i].LastLevelCacheIndex == 0) == matchZero
+		checkboxlist.List[i].SetChecked(hasMatch)
+		if hasMatch {
+			*bits = Set(CPUBits[i], *bits)
+		} else if Has(CPUBits[i], *bits) {
+			*bits = Toggle(CPUBits[i], *bits)
+		}
+	}
+}
+
 // https://docs.microsoft.com/de-de/windows-hardware/drivers/kernel/enabling-message-signaled-interrupts-in-the-registry
 func hasMsiX(b Bits) float64 {
 	if Has(b, Bits(4)) {
@@ -697,4 +828,19 @@ func CalculateMargins(value int) Margins {
 			Bottom: int(math.Ceil(part)),
 		}
 	}
+}
+
+func FindCommonValue[T comparable](devices []Device, defaultValue T, selector func(Device) T) T {
+	if len(devices) == 0 {
+		return defaultValue
+	}
+
+	firstValue := selector(devices[0])
+	for i := 0; i < len(devices[1:]); i++ {
+		if selector(devices[1:][i]) != firstValue {
+			return defaultValue
+		}
+	}
+
+	return firstValue
 }

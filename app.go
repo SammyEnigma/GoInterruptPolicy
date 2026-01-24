@@ -1,3 +1,5 @@
+//go:generate goversioninfo
+
 package main
 
 import (
@@ -7,10 +9,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 	"unsafe"
 
 	"github.com/tailscale/walk"
+	"github.com/tailscale/win"
 
 	//lint:ignore ST1001 standard behavior tailscale/walk
 	. "github.com/tailscale/walk/declarative"
@@ -40,8 +42,7 @@ func main() {
 
 		var assignmentSetOverride Bits
 		if flagCPU != "" {
-			cpuarray := strings.Split(flagCPU, ",")
-			for _, val := range cpuarray {
+			for val := range strings.SplitSeq(flagCPU, ",") {
 				i, err := strconv.Atoi(val)
 				if err != nil {
 					log.Println(err)
@@ -58,7 +59,7 @@ func main() {
 			if flagMessageNumberLimit != -1 {
 				newItem.MessageNumberLimit = uint32(flagMessageNumberLimit)
 			}
-			setMSIMode(newItem)
+			orgItem.setMSIMode(newItem)
 		}
 
 		if flagDevicePolicy != -1 || flagDevicePriority != -1 || assignmentSetOverride != ZeroBit {
@@ -71,7 +72,7 @@ func main() {
 			if assignmentSetOverride != ZeroBit {
 				newItem.AssignmentSetOverride = assignmentSetOverride
 			}
-			setAffinityPolicy(newItem)
+			orgItem.setAffinityPolicy(newItem)
 		}
 
 		changed := orgItem.MsiSupported != newItem.MsiSupported || orgItem.MessageNumberLimit != newItem.MessageNumberLimit || orgItem.DevicePolicy != newItem.DevicePolicy || orgItem.DevicePriority != newItem.DevicePriority || orgItem.AssignmentSetOverride != newItem.AssignmentSetOverride
@@ -108,7 +109,7 @@ func main() {
 				return
 			}
 
-			if DeviceInstallParams.Flags&DI_NEEDREBOOT != 0 { // DI_NEEDREBOOT
+			if DeviceInstallParams.Flags&DI_NEEDREBOOT != 0 {
 				fmt.Println("Device could not be restarted. Changes will take effect the next time you reboot.")
 			} else {
 				fmt.Println("Device successfully restarted.")
@@ -133,7 +134,8 @@ func main() {
 	}
 	if err := (MainWindow{
 		AssignTo: &mw.MainWindow,
-		Title:    "GoInterruptPolicy",
+		Title:    "GoInterruptPolicy - " + Version,
+		Icon:     2,
 		MinSize: Size{
 			Width:  240,
 			Height: 320,
@@ -160,7 +162,7 @@ func main() {
 								mw.sbi.SetText(fmt.Sprintf("%d Devices Found", len(devices)))
 							} else {
 								newDevices := []Device{}
-								for i := 0; i < len(AllDevices); i++ {
+								for i := range AllDevices {
 									if strings.Contains(strings.ToLower(AllDevices[i].DeviceDesc), text) ||
 										strings.Contains(strings.ToLower(AllDevices[i].DevObjName), text) ||
 										strings.Contains(strings.ToLower(AllDevices[i].LocationInformation), text) ||
@@ -177,12 +179,68 @@ func main() {
 			},
 			TableView{
 				OnItemActivated:     mw.lb_ItemActivated,
-				Name:                "tableView", // Name is needed for settings persistence
 				AlternatingRowBG:    true,
 				ColumnsOrderable:    true,
 				ColumnsSizable:      true,
 				LastColumnStretched: true,
+				MultiSelection:      true,
+				ContextMenuItems: []MenuItem{
+					Action{
+						Text: "&Device policy",
+						OnTriggered: func() {
+							SelectedIndexes := mw.tv.SelectedIndexes()
+							if len(SelectedIndexes) != 0 {
+								deviceList := make([]Device, len(SelectedIndexes))
+								for arrayIndex, selectionIndex := range SelectedIndexes {
+									deviceList[arrayIndex] = mw.tv.Model().(*Model).items[selectionIndex]
+								}
 
+								result, d, err := RunDialog(mw, deviceList)
+								if err != nil {
+									log.Print(err)
+									return
+								}
+
+								if result == 0 || result == win.IDCANCEL {
+									return
+								}
+
+								mw.restartPopup = true
+								for _, selectionIndex := range SelectedIndexes {
+									mw.tv.Model().(*Model).items[selectionIndex] = mw.SetNewDevice(&mw.tv.Model().(*Model).items[selectionIndex], &d)
+								}
+
+								for _, selectionIndex := range SelectedIndexes {
+									mw.tv.UpdateItem(selectionIndex)
+								}
+							}
+						},
+					},
+
+					Action{
+						Text: "&Hardware properties",
+						OnTriggered: func() {
+							SelectedIndexes := mw.tv.SelectedIndexes()
+							if len(SelectedIndexes) != 0 {
+								for _, index := range SelectedIndexes {
+									d := mw.tv.Model().(*Model).items[index]
+									if id, err := d.getInstanceID(); err == nil {
+										go showDeviceProperties(win.HWND(0), id)
+									}
+								}
+							}
+						},
+					},
+
+					Action{
+						Text: "&Registry parameters",
+						OnTriggered: func() {
+							index := mw.tv.CurrentIndex()
+							d := mw.tv.Model().(*Model).items[index]
+							OpenRegistry(mw.Form(), d.reg)
+						},
+					},
+				},
 				Model:    mw.model,
 				AssignTo: &mw.tv,
 				OnKeyUp: func(key walk.Key) {
@@ -193,8 +251,7 @@ func main() {
 					for ; i < len(mw.model.items); i++ {
 						item := &mw.model.items[i]
 						if item.DeviceDesc != "" && key.String() == item.DeviceDesc[0:1] {
-							err := mw.tv.SetCurrentIndex(i)
-							if err != nil {
+							if err := mw.tv.SetCurrentIndex(i); err != nil {
 								log.Println(err)
 							}
 							return
@@ -221,10 +278,11 @@ func main() {
 						Title:     "MSI Mode",
 						Width:     60,
 						Alignment: AlignCenter,
-						FormatFunc: func(value interface{}) string {
-							if value.(uint32) == 0 {
+						FormatFunc: func(value any) string {
+							switch value.(uint32) {
+							case 0:
 								return "✖"
-							} else if value.(uint32) == 1 {
+							case 1:
 								return "✔"
 							}
 							return ""
@@ -233,7 +291,7 @@ func main() {
 					{
 						Name:  "DevicePolicy",
 						Title: "Device Policy",
-						FormatFunc: func(value interface{}) string {
+						FormatFunc: func(value any) string {
 							// https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/interrupt-affinity-and-priority
 							switch value.(uint32) {
 							case IrqPolicyMachineDefault: // 0x00
@@ -256,7 +314,7 @@ func main() {
 					{
 						Name:  "AssignmentSetOverride",
 						Title: "Specified Processor",
-						FormatFunc: func(value interface{}) string {
+						FormatFunc: func(value any) string {
 							if value == ZeroBit {
 								return ""
 							}
@@ -281,7 +339,7 @@ func main() {
 					{
 						Name:  "DevicePriority",
 						Title: "Device Priority",
-						FormatFunc: func(value interface{}) string {
+						FormatFunc: func(value any) string {
 							switch value.(uint32) {
 							case 0:
 								return "Undefined"
@@ -300,7 +358,7 @@ func main() {
 						Name:  "InterruptTypeMap",
 						Title: "Interrupt Type",
 						Width: 120,
-						FormatFunc: func(value interface{}) string {
+						FormatFunc: func(value any) string {
 							return interruptType(value.(Bits))
 						},
 						LessFunc: func(i, j int) bool {
@@ -310,7 +368,7 @@ func main() {
 					{
 						Name:  "MessageNumberLimit",
 						Title: "MSI Limit",
-						FormatFunc: func(value interface{}) string {
+						FormatFunc: func(value any) string {
 							switch value.(uint32) {
 							case 0:
 								return ""
@@ -322,7 +380,7 @@ func main() {
 					{
 						Name:  "MaxMSILimit",
 						Title: "Max MSI Limit",
-						FormatFunc: func(value interface{}) string {
+						FormatFunc: func(value any) string {
 							switch value.(uint32) {
 							case 0:
 								return ""
@@ -334,18 +392,6 @@ func main() {
 					{
 						Name:  "DevObjName",
 						Title: "DevObj Name",
-					},
-					{
-						Name:  "LastChange",
-						Title: "Last Change",
-						Width: 130,
-						FormatFunc: func(value interface{}) string {
-							if value.(time.Time).IsZero() {
-								return "N/A"
-							} else {
-								return value.(time.Time).Format("2006-01-02 15:04:05")
-							}
-						},
 					},
 				},
 			},
@@ -379,77 +425,91 @@ func main() {
 
 type MyMainWindow struct {
 	*walk.MainWindow
-	tv    *walk.TableView
-	model *Model
-	sbi   *walk.StatusBarItem
+	tv           *walk.TableView
+	model        *Model
+	sbi          *walk.StatusBarItem
+	restartPopup bool
 }
 
 func (mw *MyMainWindow) lb_ItemActivated() {
-	newItem := &mw.tv.Model().(*Model).items[mw.tv.CurrentIndex()]
-	orgItem := *newItem
-	result, err := RunDialog(mw, newItem)
+	currentIndex := mw.tv.CurrentIndex()
+	newItem := mw.tv.Model().(*Model).items[currentIndex]
+
+	result, d, err := RunDialog(mw, []Device{newItem})
 	if err != nil {
 		log.Print(err)
+		return
 	}
-	if result == 0 || result == 2 { // cancel
-		mw.tv.Model().(*Model).items[mw.tv.CurrentIndex()] = orgItem
+	if result == 0 || result == win.IDCANCEL {
 		return
 	}
 
+	mw.restartPopup = true
+	mw.tv.Model().(*Model).items[currentIndex] = mw.SetNewDevice(&mw.tv.Model().(*Model).items[currentIndex], &d)
+
+	mw.tv.UpdateItem(currentIndex)
+}
+
+func (mw *MyMainWindow) SetNewDevice(orgItem *Device, newItem *Device) Device {
+	var changed bool
+
 	if orgItem.MsiSupported != newItem.MsiSupported || orgItem.MessageNumberLimit != newItem.MessageNumberLimit {
-		setMSIMode(newItem)
+		changed = orgItem.setMSIMode(newItem)
 	}
 
 	if orgItem.DevicePolicy != newItem.DevicePolicy || orgItem.DevicePriority != newItem.DevicePriority || orgItem.AssignmentSetOverride != newItem.AssignmentSetOverride {
-		setAffinityPolicy(newItem)
+		changed = orgItem.setAffinityPolicy(newItem) || changed
 	}
 
-	if orgItem.MsiSupported != newItem.MsiSupported || orgItem.MessageNumberLimit != newItem.MessageNumberLimit || orgItem.DevicePolicy != newItem.DevicePolicy || orgItem.DevicePriority != newItem.DevicePriority || orgItem.AssignmentSetOverride != newItem.AssignmentSetOverride {
-		if walk.MsgBox(mw.WindowBase.Form(), "Restart Device?", `Your changes will not take effect until the device is restarted.
-
-Would you like to attempt to restart the device now?`, walk.MsgBoxYesNo) == 6 {
+	if mw.restartPopup && changed {
+		switch walk.MsgBox(mw.WindowBase.Form(), "Restart Device?", fmt.Sprintf("Your changes will not take effect until the device is restarted.\n\nWould you like to attempt to restart the device now?\n\n%s\n%s", orgItem.DeviceDesc, orgItem.DevObjName), walk.MsgBoxYesNoCancel|walk.MsgBoxIconQuestion) {
+		case win.IDCANCEL:
+			mw.restartPopup = false
+			fallthrough
+		case win.IDNO:
+			mw.sbi.SetText("Restart required")
+		case win.IDYES:
 			propChangeParams := PropChangeParams{
 				ClassInstallHeader: *MakeClassInstallHeader(DIF_PROPERTYCHANGE),
 				StateChange:        DICS_PROPCHANGE,
 				Scope:              DICS_FLAG_GLOBAL,
 			}
 
-			if err := SetupDiSetClassInstallParams(handle, &newItem.Idata, &propChangeParams.ClassInstallHeader, uint32(unsafe.Sizeof(propChangeParams))); err != nil {
+			if err := SetupDiSetClassInstallParams(handle, &orgItem.Idata, &propChangeParams.ClassInstallHeader, uint32(unsafe.Sizeof(propChangeParams))); err != nil {
 				log.Println(err)
-				return
+				return *orgItem
 			}
 
-			if err := SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, handle, &newItem.Idata); err != nil {
+			if err := SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, handle, &orgItem.Idata); err != nil {
 				log.Println(err)
-				return
+				return *orgItem
 			}
 
-			if err := SetupDiSetClassInstallParams(handle, &newItem.Idata, &propChangeParams.ClassInstallHeader, uint32(unsafe.Sizeof(propChangeParams))); err != nil {
+			if err := SetupDiSetClassInstallParams(handle, &orgItem.Idata, &propChangeParams.ClassInstallHeader, uint32(unsafe.Sizeof(propChangeParams))); err != nil {
 				log.Println(err)
-				return
+				return *orgItem
 			}
 
-			if err := SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, handle, &newItem.Idata); err != nil {
+			if err := SetupDiCallClassInstaller(DIF_PROPERTYCHANGE, handle, &orgItem.Idata); err != nil {
 				log.Println(err)
-				return
+				return *orgItem
 			}
 
-			DeviceInstallParams, err := SetupDiGetDeviceInstallParams(handle, &newItem.Idata)
+			DeviceInstallParams, err := SetupDiGetDeviceInstallParams(handle, &orgItem.Idata)
 			if err != nil {
 				log.Println(err)
-				return
+				return *orgItem
 			}
 
 			if DeviceInstallParams.Flags&DI_NEEDREBOOT != 0 {
-				walk.MsgBox(mw.WindowBase.Form(), "Notice", "Device could not be restarted. Changes will take effect the next time you reboot.", walk.MsgBoxOK)
+				walk.MsgBox(mw.WindowBase.Form(), "Notice", "Device could not be restarted. Changes will take effect the next time you reboot.", walk.MsgBoxIconWarning)
 			} else {
-				walk.MsgBox(mw.WindowBase.Form(), "Notice", "Device successfully restarted.", walk.MsgBoxOK)
+				walk.MsgBox(mw.WindowBase.Form(), "Notice", "Device successfully restarted.", walk.MsgBoxIconInformation)
 			}
 
-		} else {
-			mw.sbi.SetText("Restart required")
 		}
 	}
+	return *orgItem
 }
 
 func (mw *MyMainWindow) TextWidthSize(text string) int {
@@ -472,7 +532,7 @@ type Model struct {
 	items []Device
 }
 
-func (m *Model) Items() interface{} {
+func (m *Model) Items() any {
 	return m.items
 }
 

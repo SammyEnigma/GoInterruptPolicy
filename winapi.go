@@ -4,6 +4,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/tailscale/walk"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -20,6 +21,7 @@ func FindAllDevices() ([]Device, DevInfo) {
 	var allDevices []Device
 	handle, err := SetupDiGetClassDevs(nil, nil, 0, uint32(DIGCF_ALLCLASSES|DIGCF_PRESENT))
 	if err != nil {
+		walk.MsgBox(nil, "FindAllDevices Error", err.Error(), walk.MsgBoxIconError)
 		panic(err)
 	}
 
@@ -45,10 +47,12 @@ func FindAllDevices() ([]Device, DevInfo) {
 
 		val, err = SetupDiGetDeviceRegistryProperty(handle, idata, SPDRP_DEVICEDESC)
 		if err == nil {
-			if val.(string) == "" {
-				continue
+			if v, ok := val.(string); ok {
+				if v == "" {
+					continue
+				}
+				dev.DeviceDesc = v
 			}
-			dev.DeviceDesc = val.(string)
 		} else {
 			continue
 		}
@@ -65,25 +69,26 @@ func FindAllDevices() ([]Device, DevInfo) {
 
 		val, err = SetupDiGetDeviceRegistryProperty(handle, idata, SPDRP_FRIENDLYNAME)
 		if err == nil {
-			dev.FriendlyName = val.(string)
+			if v, ok := val.(string); ok {
+				dev.FriendlyName = v
+			}
 		}
 
 		val, err = SetupDiGetDeviceRegistryProperty(handle, idata, SPDRP_PHYSICAL_DEVICE_OBJECT_NAME)
 		if err == nil {
-			dev.DevObjName = val.(string)
+			if v, ok := val.(string); ok {
+				dev.DevObjName = v
+			}
 		}
 
 		val, err = SetupDiGetDeviceRegistryProperty(handle, idata, SPDRP_LOCATION_INFORMATION)
 		if err == nil {
-			dev.LocationInformation = val.(string)
+			if v, ok := val.(string); ok {
+				dev.LocationInformation = v
+			}
 		}
 
 		dev.reg, _ = SetupDiOpenDevRegKey(handle, idata, DICS_FLAG_GLOBAL, 0, DIREG_DEV, windows.KEY_SET_VALUE)
-
-		keyinfo, err := dev.reg.Stat()
-		if err == nil {
-			dev.LastChange = keyinfo.ModTime()
-		}
 
 		affinityPolicyKey, _ := registry.OpenKey(dev.reg, `Interrupt Management\Affinity Policy`, registry.QUERY_VALUE)
 		dev.DevicePolicy = GetDWORDuint32Value(affinityPolicyKey, "DevicePolicy")               // REG_DWORD
@@ -103,7 +108,7 @@ func FindAllDevices() ([]Device, DevInfo) {
 			dev.MsiSupported = GetDWORDuint32Value(messageSignaledInterruptPropertiesKey, "MSISupported")             // REG_DWORD
 			messageSignaledInterruptPropertiesKey.Close()
 		} else {
-			dev.MsiSupported = 2 // invalid
+			dev.MsiSupported = MSI_Invalid
 		}
 
 		allDevices = append(allDevices, dev)
