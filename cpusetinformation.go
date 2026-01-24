@@ -40,16 +40,16 @@ type CpuSet struct {
 }
 
 func (cs *CpuSets) Init() {
-	size := 0x20 * 64
-	SystemCpuSets = make([]SYSTEM_CPU_SET_INFORMATION, size)
-
+	var SystemCpuSets = make([]SYSTEM_CPU_SET_INFORMATION, 1)
 	var length uint32
 	var hProcess windows.Handle
-	success := GetSystemCpuSetInformation(&SystemCpuSets[0], uint32(size), &length, uintptr(hProcess), 0)
+
+	GetSystemCpuSetInformation(&SystemCpuSets[0], 1, &length, uintptr(hProcess), 0)
+
+	SystemCpuSets = make([]SYSTEM_CPU_SET_INFORMATION, length)
+	success := GetSystemCpuSetInformation(&SystemCpuSets[0], uint32(length), &length, uintptr(hProcess), 0)
 	if success != 1 {
 		log.Println("err")
-	} else {
-		SystemCpuSets = SystemCpuSets[:length]
 	}
 
 	/// debug
