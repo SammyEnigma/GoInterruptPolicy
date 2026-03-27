@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"log"
 	"strconv"
 	"unsafe"
@@ -22,6 +23,8 @@ type Device struct {
 	Driver              string
 	LocationInformation string
 	FriendlyName        string
+	Class               string
+	IRQLanes            []string
 
 	// AffinityPolicy
 	DevicePolicy          uint32

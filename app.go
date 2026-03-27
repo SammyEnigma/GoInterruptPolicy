@@ -268,6 +268,10 @@ func main() {
 						Name:  "FriendlyName",
 						Title: "Friendly Name",
 					},
+
+					{
+						Name: "Class",
+					},
 					{
 						Name:  "LocationInformation",
 						Title: "Location Info",
@@ -389,6 +393,15 @@ func main() {
 							}
 						},
 					},
+
+					{
+						Name:  "IRQLanes",
+						Title: "IRQ Lanes",
+						FormatFunc: func(value any) string {
+							return strings.Join(value.([]string), ", ")
+						},
+					},
+
 					{
 						Name:  "DevObjName",
 						Title: "DevObj Name",
